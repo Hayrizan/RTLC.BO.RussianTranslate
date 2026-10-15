@@ -1,0 +1,15 @@
+# Public repository allowlist: keep working files, game data and QA output local.
+/*
+!/.gitignore
+!/README.md
+!/CHANGELOG.md
+!/CREDITS.md
+!/src/
+!/translation/
+
+/src/*
+!/src/*.cs
+!/src/BoRussian.csproj
+
+/translation/*
+!/translation/RussianData.json

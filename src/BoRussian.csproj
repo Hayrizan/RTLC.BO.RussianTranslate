@@ -15,6 +15,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Reference Include="UnityEngine.VideoModule">
+      <HintPath>$(GameManagedDir)\UnityEngine.VideoModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="UnityEngine.AssetBundleModule">
       <HintPath>$(GameManagedDir)\UnityEngine.AssetBundleModule.dll</HintPath>
       <Private>false</Private>

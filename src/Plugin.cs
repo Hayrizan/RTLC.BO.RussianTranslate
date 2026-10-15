@@ -32,10 +32,14 @@ namespace RTLC.BO.RussianTranslate
 
         internal static ManualLogSource ModLog;
         internal static BoRussianPlugin Instance;
-        private float _nextRefresh;
         private bool _firstUpdateLogged;
-        private string _visibleSettings;
+        private bool _refreshing;
+        private string _settingsLanguage;
+        private int _visibleSettings = int.MinValue;
+        private readonly List<VerticalLayoutGroup> _settingsPages = new List<VerticalLayoutGroup>();
         private ConfigEntry<bool> _debugMode;
+        private ConfigEntry<bool> _skipIntro;
+        internal bool SkipIntro => _skipIntro != null && _skipIntro.Value;
         private bool _loadedDebugMode;
         private string _translationStamp;
         private long _configWrite;
@@ -64,11 +68,14 @@ namespace RTLC.BO.RussianTranslate
             Logger.LogMessage("Русификатор разработан RTLC TEAM");
             _debugMode = Config.Bind("General", "debugmode", false,
                 "false: перевод из rtlc.bundle. true: RussianData.json рядом с DLL; изменения применяются после сохранения файла.");
+            _skipIntro = Config.Bind("General", "skip intri", false,
+                "true: при запуске сразу открывать главное меню без заставок и рекомендаций. Вступление новой игры сохраняется. Применяется при следующем запуске.");
             _loadedDebugMode = _debugMode.Value;
             gameObject.hideFlags |= HideFlags.HideAndDontSave;
             DontDestroyOnLoad(gameObject);
             SceneManager.sceneLoaded += OnSceneLoaded;
             Canvas.preWillRenderCanvases += PrepareVisibleSettings;
+            LocalizationManager.OnLocalizeEvent += RefreshRuntime;
             LoadTranslations();
 
             Harmony harmony = new Harmony(PluginGuid);
@@ -141,7 +148,7 @@ namespace RTLC.BO.RussianTranslate
                 _patchedSources.Clear();
                 _patchedDatabases.Clear();
                 _dialogueLanguage = null;
-                _visibleSettings = null;
+                _visibleSettings = int.MinValue;
                 Logger.LogInfo(_loadedDebugMode ? "Debug: перевод из " + RussianAssets.TranslationPath : "Перевод из rtlc.bundle (debugmode = false).");
                 return true;
             }
@@ -180,17 +187,18 @@ namespace RTLC.BO.RussianTranslate
             if (!_firstUpdateLogged)
             {
                 _firstUpdateLogged = true;
-                Logger.LogInfo("Периодическое обновление локализации запущено.");
+                Logger.LogInfo("Локализация обновляется при загрузке интерфейса и смене языка.");
+                RefreshRuntime();
             }
-            if (Time.realtimeSinceStartup < _nextRefresh)
-                return;
-            _nextRefresh = Time.realtimeSinceStartup + 0.25f;
-            RefreshRuntime();
+            // New text is handled by the font/parser hooks. I2's completion
+            // event runs after its deferred localization of the whole interface.
         }
 
         private void OnDestroy()
         {
             Canvas.preWillRenderCanvases -= PrepareVisibleSettings;
+            SceneManager.sceneLoaded -= OnSceneLoaded;
+            LocalizationManager.OnLocalizeEvent -= RefreshRuntime;
             ModLog.LogInfo("Unity-объект плагина остановлен; обработчики Harmony сохраняют данные.");
         }
 
@@ -199,18 +207,17 @@ namespace RTLC.BO.RussianTranslate
             if (_termTranslations.Count == 0) return;
             // Activation and localization finish before Canvas layout. Preparing
             // here avoids displaying one frame of native AutoSize in RU boxes.
-            // Only page/locale changes trigger the work; the timer remains a fallback.
-            var pages = new List<int>();
-            foreach (VerticalLayoutGroup layout in Resources.FindObjectsOfTypeAll<VerticalLayoutGroup>())
-                if (layout.gameObject.scene.IsValid() && layout.gameObject.activeInHierarchy
-                    && layout.name.EndsWith(" Page", StringComparison.Ordinal) && layout.transform.parent != null
-                    && layout.transform.parent.name == "Pages" && layout.transform.parent.parent != null
-                    && layout.transform.parent.parent.name == "NewSettingsMenu") pages.Add(layout.GetInstanceID());
-            pages.Sort();
-            string signature = LocalizationManager.CurrentLanguageCode + "|" + string.Join(",", pages);
-            if (_visibleSettings == signature) return;
+            // The small page cache is populated when the UI loads; no global
+            // object search or allocation is needed on an unchanged frame.
+            int signature = 0;
+            foreach (VerticalLayoutGroup page in _settingsPages)
+                if (page != null && page.gameObject.activeInHierarchy)
+                    unchecked { signature = signature * 31 + page.GetInstanceID(); }
+            string language = LocalizationManager.CurrentLanguageCode;
+            if (_visibleSettings == signature && _settingsLanguage == language) return;
             _visibleSettings = signature;
-            if (pages.Count == 0) return;
+            _settingsLanguage = language;
+            if (signature == 0) return;
             try
             {
                 RussianFonts.Refresh();
@@ -229,12 +236,14 @@ namespace RTLC.BO.RussianTranslate
 
         internal void RefreshRuntime()
         {
-            if (_termTranslations.Count == 0)
+            if (_termTranslations.Count == 0 || _refreshing)
                 return;
+            _refreshing = true;
             try
             {
                 AddRussianToSources();
                 RestoreRussianStartupPreference();
+                CacheSettingsPages();
                 RussianFonts.Refresh();
                 RussianDropdownLayout.Refresh();
                 RussianMenuLayout.Refresh();
@@ -248,6 +257,18 @@ namespace RTLC.BO.RussianTranslate
             {
                 Logger.LogError("Ошибка обновления русской локализации: " + ex);
             }
+            finally { _refreshing = false; }
+        }
+
+        private void CacheSettingsPages()
+        {
+            _settingsPages.Clear();
+            foreach (VerticalLayoutGroup page in Resources.FindObjectsOfTypeAll<VerticalLayoutGroup>())
+                if (page.gameObject.scene.IsValid() && page.name.EndsWith(" Page", StringComparison.Ordinal)
+                    && page.transform.parent != null && page.transform.parent.name == "Pages"
+                    && page.transform.parent.parent != null && page.transform.parent.parent.name == "NewSettingsMenu")
+                    _settingsPages.Add(page);
+            _visibleSettings = int.MinValue;
         }
 
         private void AddRussianToSources()
@@ -624,6 +645,22 @@ namespace RTLC.BO.RussianTranslate
         }
     }
 
+    [HarmonyPatch]
+    internal static class RussianInventoryInitializationPatch
+    {
+        private static IEnumerable<MethodBase> TargetMethods()
+        {
+            yield return AccessTools.Method(typeof(SelectMenu), "Start");
+            yield return AccessTools.Method(typeof(SelectMenu), "InventoryMenuActive");
+        }
+
+        private static void Postfix()
+        {
+            if (!ReferenceEquals(BoRussianPlugin.Instance, null))
+                BoRussianPlugin.Instance.RefreshRuntime();
+        }
+    }
+
     [HarmonyPatch(typeof(SetLanguageDropdown), "OnEnable")]
     internal static class RussianDropdownOptionsPatch
     {
@@ -695,8 +732,6 @@ namespace RTLC.BO.RussianTranslate
                 "После выбора: I2={0} ({1}); UI/Language: индекс ru={2}, значение столбца='{3}', GetTranslation='{4}'.",
                 currentLanguage, LocalizationManager.CurrentLanguageCode, russianIndex, rawSample, sample));
             LocalizationManager.LocalizeAll(true);
-            if (!ReferenceEquals(BoRussianPlugin.Instance, null))
-                BoRussianPlugin.Instance.RefreshRuntime();
         }
     }
 

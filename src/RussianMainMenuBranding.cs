@@ -225,6 +225,8 @@ namespace RTLC.BO.RussianTranslate
                 var branding = __instance.GetComponent<RussianMainMenuBranding>();
                 if (branding == null) branding = __instance.gameObject.AddComponent<RussianMainMenuBranding>();
                 branding.Initialize(__instance);
+                if (!ReferenceEquals(BoRussianPlugin.Instance, null))
+                    BoRussianPlugin.Instance.RefreshRuntime();
             }
             catch (Exception ex) { BoRussianPlugin.ModLog.LogError("Ошибка оформления главного меню: " + ex); }
         }
